@@ -17,18 +17,19 @@
    ```
    Google Chrome 이 필요하다. 렌더한 PNG 를 열어 바뀐 부분을 눈으로 확인한다.
 4. **설치본 동기화.** 내 Herdr 에서 바로 보려면 `mods/claude-accounts/` 를 `~/.config/herdr-app/mods/claude-accounts/` 로 복사한다. 설치본은 심볼릭 링크가 아니라 복사본이다.
-5. **`cca` 수정은 herdr-shared 에서만.** 셸 로직의 유일한 구현은 `~/git-repo/herdr-shared/bin/cca` 다. `mods/claude-accounts/` 의 `cca`, `usage-tap.sh`, `usage-api.mjs`, `codex-usage.mjs`, `models.mjs` 는 `herdr-shared/tools/vendor.sh` 가 쓴 사본이니 이 저장소에서 고치지 않는다. `main.js` 에 같은 로직을 다시 쓰지 않는다.
+5. **`cca` 수정은 herdr-shared 에서만.** 셸 로직의 유일한 구현은 [herdr-shared](https://github.com/lcalmsky/herdr-shared) 의 `bin/cca` 이고 이 저장소는 그것을 `vendor/herdr-shared` 서브모듈로 참조한다. `mods/claude-accounts/` 의 `cca`, `usage-tap.sh`, `usage-api.mjs`, `codex-usage.mjs`, `models.mjs` 는 `vendor/herdr-shared/tools/vendor.sh --list .` 가 쓴 사본이니 이 저장소에서 고치지 않는다. `main.js` 에 같은 로직을 다시 쓰지 않는다.
 6. **README 의 권한 고지 확인.** mod 가 새로 `exec`·`hc`·네트워크·폴더 밖 파일 읽기·`~/.claude` 쓰기를 하게 됐으면 README 의 "Before adding it" 목록에 적는다.
 
 ## control-tower 와의 동기화
 
 - 이 저장소가 `claude-accounts` mod 의 `main.js`·`mod.json` 정본이다. control-tower 레이아웃이 이 mod 를 싣기 때문에, 이 둘을 바꾸면 같은 푸시에서 `~/git-repo/herdr-control-tower/mods/claude-accounts/` 로도 복사한다.
 - 두 사본의 `main.js`, `mod.json` 은 항상 같아야 한다.
-- `cca`, `usage-tap.sh`, `usage-api.mjs`, `codex-usage.mjs`, `models.mjs` 의 정본은 `~/git-repo/herdr-shared` 다. 이 저장소의 사본은 아래 명령으로만 다시 쓰고, 고칠 일이 있으면 herdr-shared 를 고친 뒤 다시 vendor 한다.
+- `cca`, `usage-tap.sh`, `usage-api.mjs`, `codex-usage.mjs`, `models.mjs` 의 정본은 herdr-shared 이고, 이 저장소는 그것을 `vendor/herdr-shared` 서브모듈로 참조한다. 사본은 아래 명령으로만 다시 쓴다 (`herdr-shared.list` 가 그룹과 대상을 정한다).
   ```sh
-  ~/git-repo/herdr-shared/tools/vendor.sh accounts mods/claude-accounts
+  vendor/herdr-shared/tools/vendor.sh --list .
   ```
-- `sh tools/check-vendor.sh` 로 사본이 herdr-shared 와 바이트 단위로 같고 실행 비트가 같은지 확인한다. herdr-shared 가 없으면 건너뛴다.
+- 공용 스크립트를 고칠 때는 herdr-shared 에서 고쳐 push 한 뒤 그 저장소에서 `tools/sync-themes.sh --commit --push` 를 돌린다. 이 저장소의 서브모듈 포인터가 그 커밋으로 올라가고, 사본이 다시 쓰인다.
+- `sh tools/check-vendor.sh` 는 `vendor/herdr-shared/tools/check-vendor.sh` 를 부르는 얇은 호출자다. 사본이 서브모듈과 바이트 단위로 같고 실행 비트가 같은지 확인하고, 서브모듈이 초기화되어 있지 않으면 건너뛴다.
 
 ## 라이선스
 

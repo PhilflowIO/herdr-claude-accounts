@@ -40,7 +40,7 @@ The CLI is the same folder's `cca`:
 ln -s ~/.config/herdr-app/mods/claude-accounts/cca ~/.local/bin/cca
 ```
 
-With herdr-shared installed, link `~/.local/share/herdr-shared/cca` instead; it is the same file the mod folder carries.
+With herdr-shared installed, link `~/.local/share/herdr-shared/cca` instead; it is the same file the mod folder carries. The mod folder's `cca`, `usage-tap.sh`, `usage-api.mjs`, `codex-usage.mjs` and `models.mjs` are copies from the [`herdr-shared`](https://github.com/lcalmsky/herdr-shared) submodule at `vendor/herdr-shared`; a checkout without the submodule still has the copies, and `git clone --recursive` is only needed for the drift check.
 
 ### Reading accounts
 
