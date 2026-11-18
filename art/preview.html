@@ -13,7 +13,22 @@ html,body{background:#000}
 .lights{position:absolute;left:12px;top:16px;display:flex;gap:8px;z-index:5}.lights i{width:12px;height:12px;border-radius:6px}
 #head{height:44px;display:flex;align-items:center;gap:8px;padding:0 20px}
 #head b{font:700 15px Nunito}#head span{font:600 13px Nunito;color:#7a8296}
-.chip{display:flex;align-items:center;gap:6px;height:26px;padding:0 10px 0 3px;border-radius:13px;background:#11141c;border:1px solid #1d212b}
+#gaugebar{flex:none;display:flex;align-items:center;gap:16px}
+.ga{flex:none;display:flex;align-items:center;gap:8px}
+.g{flex:none;display:flex;align-items:center;gap:4px}
+.gn{font:700 12px Nunito;color:#7a8296}
+.gn.on{color:#eef0f5}
+.gl{font:700 11px Nunito;color:#7a8296;font-style:normal}
+.gb{position:relative;display:block;width:44px;height:4px;border-radius:2px;background:#1d212b;overflow:hidden}
+.gf{position:absolute;left:0;top:0;bottom:0;display:block;border-radius:2px;background:#a3a9b8}
+.gf.hot{background:#e5484d}
+.gb .t{position:absolute;top:0;bottom:0;width:1px;background:#07080d}
+.gp{font:400 12px "Geist Mono",ui-monospace,monospace;color:#a3a9b8;font-style:normal}
+.gp.on{color:#eef0f5}
+.gp.hot{color:#e5484d}
+.gr{font:400 12px "Geist Mono",ui-monospace,monospace;color:#7a8296;font-style:normal;white-space:nowrap}
+.gdiv{flex:none;display:block;width:1px;height:16px;background:#1d212b}
+.chip{flex:none;display:flex;align-items:center;gap:6px;height:26px;padding:0 10px 0 3px;border-radius:13px;background:#11141c;border:1px solid #1d212b}
 .chip .av{width:20px;height:20px;border-radius:10px;background:#1a1e28;display:flex;align-items:center;justify-content:center;font:700 11px Nunito;color:#eef0f5}
 .chip .nm{font:600 13px Nunito;color:#eef0f5}
 .chip .cv{font:400 10px Nunito;color:#7a8296;font-style:normal}
@@ -56,7 +71,18 @@ html,body{background:#000}
   <div id="head">
     <b>acme-shop</b><span>12 aircraft · 4 runways</span>
     <div style="flex:1"></div>
-    <div class="chip"><i class="av">W</i><b class="nm">work</b><i class="cv">▾</i></div>
+    <div id="gaugebar">
+      <div class="ga"><b class="gn on">work</b>
+        <span class="g"><i class="gl">5h</i><span class="gb"><i class="gf" style="width:18px"></i><i class="t" style="left:11px"></i><i class="t" style="left:22px"></i><i class="t" style="left:33px"></i></span><i class="gp on">41%</i></span>
+        <span class="g"><i class="gl">7d</i><span class="gb"><i class="gf hot" style="width:43px"></i><i class="t" style="left:11px"></i><i class="t" style="left:22px"></i><i class="t" style="left:33px"></i></span><i class="gp hot">98%</i><i class="gr">↻ 15:20</i></span>
+      </div>
+      <i class="gdiv"></i>
+      <div class="ga"><b class="gn">personal</b>
+        <span class="g"><i class="gl">5h</i><span class="gb"><i class="gf" style="width:11px"></i><i class="t" style="left:11px"></i><i class="t" style="left:22px"></i><i class="t" style="left:33px"></i></span><i class="gp">24%</i></span>
+        <span class="g"><i class="gl">7d</i><span class="gb"><i class="gf" style="width:5px"></i><i class="t" style="left:11px"></i><i class="t" style="left:22px"></i><i class="t" style="left:33px"></i></span><i class="gp">11%</i></span>
+      </div>
+      <div class="chip"><i class="av">W</i><b class="nm">work</b><i class="cv">▾</i></div>
+    </div>
   </div>
   <div id="body">
     <div id="rail">

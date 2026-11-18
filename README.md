@@ -16,10 +16,10 @@ Paste this into an agent running in Herdr:
 Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/lcalmsky/herdr-claude-accounts
 ```
 
-The mod is `none`-placed, so it does nothing until a layout places the chip or you press its key. Copy `mods/claude-accounts/` to `~/.config/herdr-app/mods/claude-accounts/`, merge `keys.json` into yours (`ctrl-shift-a`), and put the chip in a head block (150 px is roomy):
+The mod is `none`-placed, so it does nothing until a layout places the chip or you press its key. Copy `mods/claude-accounts/` to `~/.config/herdr-app/mods/claude-accounts/`, merge `keys.json` into yours (`ctrl-shift-a`), and give it a flexible block in a head row. The block draws each account's name and its 5h and 7d gauges, then the chip, all right-aligned; it needs about 410 px for one account and about 290 px more for each further account. The content is right-aligned and does not shrink, so a narrower block cuts off the leftmost gauges:
 
 ```json
-{ "id": "accounts", "type": "block", "size": { "px": 150 }, "window_drag": true,
+{ "id": "accounts", "type": "block", "size": { "weight": 1 }, "window_drag": true,
   "content": { "mod": "claude-accounts", "props": { "role": "chip" } } }
 ```
 
