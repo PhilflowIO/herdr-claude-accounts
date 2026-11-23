@@ -159,16 +159,20 @@ export default class ClaudeAccounts extends View {
     });
   }
 
+  // The pane command that starts Claude Code as an account, resuming a session when one is given.
+  // `cca --porcelain-start` sets CLAUDE_CONFIG_DIR (unset for default, since set to ~/.claude Claude
+  // Code would read ~/.claude/.claude.json and start empty) and CCA_ACCOUNT (so the click wins over
+  // the shell hook's global default), copies the user MCP servers in, changes into the session's
+  // folder, and runs claude through the person's login shell, interactive, so their shell startup
+  // files' PATH and variables apply as in a terminal tab. Every value is its own argument: no quoting.
+  startArgv(name, session = null) {
+    return session ? ["sh", cca(), "--porcelain-start", name, session.id, session.cwd] : ["sh", cca(), "--porcelain-start", name];
+  }
+
   // Opens the chosen account's Claude Code in a pane beside the focused one; running agents keep their own account.
   openAgent(name) {
     if (!ACCOUNT_NAME.test(name)) return;
-    // The default account runs with CLAUDE_CONFIG_DIR unset: set to ~/.claude, Claude Code would read
-    // ~/.claude/.claude.json instead of ~/.claude.json and start from an empty state. CCA_ACCOUNT makes
-    // this click win over the global default the shell hook would otherwise apply.
-    const env = name === "default"
-      ? "unset CLAUDE_CONFIG_DIR; CCA_ACCOUNT=default"
-      : `CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/${name}" CCA_ACCOUNT=${name}`;
-    run("pane.split", { direction: "right", argv: ["sh", "-lc", `${env} exec claude`] });
+    run("pane.split", { direction: "right", argv: this.startArgv(name) });
   }
 
   addAccount() {
@@ -351,13 +355,7 @@ export default class ClaudeAccounts extends View {
   // Resumes the focused agent's session under another account in a new pane; the old one keeps running.
   continueAs(name, session) {
     if (!ACCOUNT_NAME.test(name) || !SESSION_ID.test(session?.id ?? "") || !session?.cwd) return;
-    const env = name === "default"
-      ? "unset CLAUDE_CONFIG_DIR; CCA_ACCOUNT=default"
-      : `CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/${name}" CCA_ACCOUNT=${name}`;
-    // pane.split takes no folder, so the shell changes into the session's cwd first and stops if it can't
-    // (the default env's `;` would end an `&&` chain and still start Claude in the wrong folder).
-    const cwd = `'${session.cwd.replace(/'/g, "'\\''")}'`;
-    run("pane.split", { direction: "right", argv: ["sh", "-lc", `cd ${cwd} || exit 1; ${env} exec claude --resume ${session.id}`] });
+    run("pane.split", { direction: "right", argv: this.startArgv(name, session) });
   }
 
   // Makes the account new sessions start under; the popup stays open so the radio follows.
