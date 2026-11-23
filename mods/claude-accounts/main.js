@@ -1,7 +1,7 @@
 // Claude accounts for Herdr: the head shows a 5h and 7d gauge for every account, then a chip
 // naming the focused agent's account. The chip's popup picks the account new sessions start
-// under, renames accounts in place, resumes this session under another account, or makes a new
-// account. The shell work lives in `cca`.
+// under, renames accounts in place, deletes one after a second click, resumes this session under
+// another account, or makes a new account. The shell work lives in `cca`.
 // props().role: "chip" draws the head, "rail" one ringed avatar per account for the bottom of a
 // side rail, "menu" (or none, as mod.open gives) the accounts popup, and mode "add" the add form.
 
@@ -17,7 +17,7 @@ const FONT = "Nunito";
 
 // Account names go into a shell command line, so only these characters are accepted anywhere.
 const ACCOUNT_NAME = /^[A-Za-z0-9_-]+$/;
-const RESERVED = new Set(["ls", "add", "share", "help"]);
+const RESERVED = new Set(["ls", "add", "rm", "share", "help"]);
 const REMOTE = "Accounts live on this computer: focus one of its panes first.";
 // Why "Continue this session as" left the session where it is; each fits the popup's last line.
 const BUSY = "Wait until this session is idle, then move it.";
@@ -71,6 +71,8 @@ export default class ClaudeAccounts extends View {
     this.rename = null;
     this.renameError = null;
     this.actionError = null;
+    // The account whose trash was clicked once: its row asks "Really delete?" until a second click.
+    this.confirmRemove = null;
     if (this.role === "menu" && p.mode === "add") {
       this.cx = cx;
       this.input = InputState.new({ value: "" });
@@ -406,9 +408,31 @@ export default class ClaudeAccounts extends View {
     });
   }
 
+  // Deletes an account with `cca --porcelain-rm`, which refuses default, an account a process still
+  // runs under, and never follows the folder's links into ~/.claude. The popup stays open.
+  removeAccount(name, cx) {
+    if (!ACCOUNT_NAME.test(name) || name === "default" || this.removingAccount) return;
+    this.removingAccount = true;
+    this.actionError = null;
+    cx.spawn(async (cx) => {
+      let r = null;
+      try { r = await exec("sh", [cca(), "--porcelain-rm", name]); } catch {}
+      this.removingAccount = false;
+      this.confirmRemove = null;
+      if (!r || r.code !== 0) {
+        this.actionError = ((r?.stderr || r?.stdout) ?? "").trim() || "Could not delete the account.";
+        cx.notify();
+        return;
+      }
+      this.readAccounts(cx);
+      cx.notify();
+    });
+  }
+
   startRename(a, cx) {
     this.actionError = null;
     this.renameError = null;
+    this.confirmRemove = null;
     this.hover = null;
     const input = InputState.new({ value: display(a) });
     input.on("submit", (_e, cx) => this.saveRename(cx));
@@ -461,6 +485,8 @@ export default class ClaudeAccounts extends View {
             .text_color(this.renameError ? INK.red : INK.t3).child(this.renameError ?? "↩ save · esc cancel"));
       }
       const hovered = this.hover === a.name;
+      const confirming = this.confirmRemove === a.name;
+      const removable = a.name !== "default";
       return h_flex().id(`acct-${a.name}`).h(44).flex_none().px(8).rounded(8).gap(8).items_center().cursor_pointer()
         .hover((h) => h.bg(INK.selected))
         .on_hover((on, cx) => {
@@ -469,7 +495,12 @@ export default class ClaudeAccounts extends View {
           cx.notify();
         })
         .tooltip(`New sessions open as ${display(a)}`)
-        .on_click((_e, cx) => { if (!this.rename) this.useAccount(a.name, cx); })
+        .on_click((_e, cx) => {
+          if (this.rename) return;
+          // A click beside "Really delete?" takes the question back instead of choosing the account.
+          if (this.confirmRemove) { this.confirmRemove = null; cx.notify(); return; }
+          this.useAccount(a.name, cx);
+        })
         .child(div().w(14).flex_none().flex().justify_center().child(this.radio(isDefault)))
         .child(this.avatar(display(a), 20, 10))
         .child(v_flex().flex_1().min_w(0).gap(2)
@@ -478,12 +509,22 @@ export default class ClaudeAccounts extends View {
             .when(a.name === cur, (el) => el.child(div().flex_none().text_size(10).font_family("Geist Mono")
               .text_color(INK.t3).child("this pane"))))
           .child(div().truncate().text_size(11).font_family("Geist Mono").text_color(INK.t3).child(a.email || "not signed in")))
-        .child(h_flex().flex_none().items_center()
-          .when(!hovered, (el) => el.child(this.usageLine(a)))
-          .when(hovered, (el) => el.child(h_flex().id(`pen-${a.name}`).size(16).flex_none().items_center()
-            .justify_center().cursor_pointer()
+        .child(h_flex().flex_none().items_center().gap(8)
+          .when(!hovered && !confirming, (el) => el.child(this.usageLine(a)))
+          .when(hovered && !confirming, (el) => el.child(h_flex().id(`pen-${a.name}`).size(16).flex_none().items_center()
+            .justify_center().cursor_pointer().tooltip(`Rename ${display(a)}`)
             .on_click((_e, cx) => { cx.stop_propagation(); this.startRename(a, cx); })
-            .child(svg("mods/claude-accounts/pencil.svg").size(16).flex_none().text_color(INK.t3)))));
+            .child(svg("mods/claude-accounts/pencil.svg").size(16).flex_none().text_color(INK.t3))))
+          .when(hovered && !confirming && removable, (el) => el.child(h_flex().id(`trash-${a.name}`).size(16).flex_none()
+            .items_center().justify_center().cursor_pointer().tooltip(`Delete ${display(a)}`)
+            .on_click((_e, cx) => { cx.stop_propagation(); this.actionError = null; this.confirmRemove = a.name; cx.notify(); })
+            .child(svg("mods/claude-accounts/trash.svg").size(16).flex_none().text_color(INK.t3))))
+          .when(confirming, (el) => el.child(h_flex().id(`rm-${a.name}`).h(22).px(8).flex_none().items_center().rounded(6)
+            .border(1).border_color(INK.red).cursor_pointer().hover((h) => h.bg("#e5484d22"))
+            .tooltip(`Deletes ~/.claude-accounts/${a.name} and its login`)
+            .on_click((_e, cx) => { cx.stop_propagation(); this.removeAccount(a.name, cx); })
+            .child(div().text_size(11).font_family(FONT).font_weight(600).text_color(INK.red)
+              .child(this.removingAccount ? "Deleting…" : "Really delete?")))));
     };
     const resumeRow = (a) => h_flex().id(`cont-${a.name}`).h(32).flex_none().px(8).rounded(8).gap(8).items_center().cursor_pointer()
       .hover((h) => h.bg(INK.selected)).tooltip(`Resume this session as ${display(a)}, then close this pane`)
@@ -504,6 +545,12 @@ export default class ClaudeAccounts extends View {
       .child(div().flex_none().text_size(11).font_family("Geist Mono").text_color(INK.t3).child("resume in pane"));
     return v_flex().id("accounts-menu").w_full().h_full().min_h(0).p(6).track_focus(this.handle)
       .on_key_down((e, cx) => {
+        if (e.key === "escape" && this.confirmRemove && !this.rename) {
+          this.confirmRemove = null;
+          cx.stop_propagation();
+          cx.notify();
+          return;
+        }
         if (e.key === "escape" && this.rename) {
           this.rename = null;
           this.renameError = null;
