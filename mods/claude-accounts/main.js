@@ -7,7 +7,7 @@
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, terminals, focused, spaces, run, exec, props, appHome, openOverlay, closeOverlay, checking } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, exec, props, appHome, openOverlay, closeOverlay, checking } from "herdr";
 
 const INK = {
   ink: "#07080d", card: "#11141c", raised: "#1a1e28", selected: "#161a24", line: "#1d212b",
@@ -19,6 +19,10 @@ const FONT = "Nunito";
 const ACCOUNT_NAME = /^[A-Za-z0-9_-]+$/;
 const RESERVED = new Set(["ls", "add", "share", "help"]);
 const REMOTE = "Accounts live on this computer: focus one of its panes first.";
+// Why "Continue this session as" left the session where it is; each fits the popup's last line.
+const BUSY = "Wait until this session is idle, then move it.";
+const UNSURE = "Can't tell if this session is idle: not moved.";
+const NOT_STARTED = "The new pane didn't open: nothing was closed.";
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Herdr has no API for a mod's own folder; the app home is where Herdr keeps mods.
@@ -83,14 +87,19 @@ export default class ClaudeAccounts extends View {
     this.readAccounts(cx);
   }
 
-  // The focused agent's pid when it is a local Claude Code process.
-  focusedPid() {
+  // The focused agent and its pid when it is a local Claude Code process, else null.
+  focusedClaude() {
     const f = focused();
     const a = agents().find((x) => x.focused || (f && (f.terminal === x.address || f.agent === x.address)));
     if (!a || a.address.includes("/")) return null;
     const t = terminals().find((x) => x.address === a.address);
     const claude = [t?.program?.key, t?.foreground?.name].some((n) => String(n ?? "").toLowerCase().includes("claude"));
-    return claude ? t?.foreground?.pid ?? null : null;
+    const pid = claude ? t?.foreground?.pid ?? null : null;
+    return pid == null ? null : { agent: a, pid };
+  }
+
+  focusedPid() {
+    return this.focusedClaude()?.pid ?? null;
   }
 
   // The accounts and cca live on this computer; a split of another machine's pane would start Claude there.
@@ -134,7 +143,7 @@ export default class ClaudeAccounts extends View {
               ? { used: Number(u), reset: /^\d+$/.test(at ?? "") ? Number(at) : null } : null;
             byName[name].usage = { five: win(f[2], f[3]), seven: win(f[4], f[5]) };
           }
-          if (kind === "S" && SESSION_ID.test(name ?? "")) session = { id: name, cwd: (value ?? "").trim() };
+          if (kind === "S" && SESSION_ID.test(name ?? "")) session = { id: name, cwd: (value ?? "").trim(), pid: key };
         }
         for (const a of accounts) a.label = labels[a.name] ?? null;
       } catch {}
@@ -352,10 +361,30 @@ export default class ClaudeAccounts extends View {
         .child([...(display(a) || "?")][0]?.toUpperCase() ?? "?"));
   }
 
-  // Resumes the focused agent's session under another account in a new pane; the old one keeps running.
-  continueAs(name, session) {
-    if (!ACCOUNT_NAME.test(name) || !SESSION_ID.test(session?.id ?? "") || !session?.cwd) return;
-    run("pane.split", { direction: "right", argv: this.startArgv(name, session) });
+  // Moves the focused agent's session to another account: a new pane beside it resumes the session,
+  // and once that pane is there the old agent's terminal is ended. Two Claude Code processes on one
+  // session would both append to its transcript, so only an agent that is idle or done moves, and
+  // nothing is ended unless the new pane appeared. Calls done(null) once moved, else done(reason).
+  continueAs(name, session, cx, done) {
+    if (!ACCOUNT_NAME.test(name) || !SESSION_ID.test(session?.id ?? "") || !session?.cwd) return done(UNSURE);
+    const here = this.focusedClaude();
+    // The session was read for one pid; a focus change since then would resume the wrong one.
+    if (!here || String(here.pid) !== String(session.pid ?? "")) return done(UNSURE);
+    const old = here.agent;
+    if (old.status !== "idle" && old.status !== "done") return done(BUSY);
+    const before = new Set(panes().filter((p) => p.tab === old.tab).map((p) => p.pane));
+    run("pane.split", { direction: "right", pane: old.pane, argv: this.startArgv(name, session) });
+    let tries = 0;
+    const check = () => {
+      const fresh = panes().some((p) => p.tab === old.tab && p.terminal && !before.has(p.pane));
+      if (fresh) {
+        run("terminal.kill", { terminal: old.address });
+        return done(null);
+      }
+      if (++tries >= 30) return done(NOT_STARTED);
+      cx.timer.after(100, check);
+    };
+    check();
   }
 
   // Makes the account new sessions start under; the popup stays open so the radio follows.
@@ -457,8 +486,18 @@ export default class ClaudeAccounts extends View {
             .child(svg("mods/claude-accounts/pencil.svg").size(16).flex_none().text_color(INK.t3)))));
     };
     const resumeRow = (a) => h_flex().id(`cont-${a.name}`).h(32).flex_none().px(8).rounded(8).gap(8).items_center().cursor_pointer()
-      .hover((h) => h.bg(INK.selected)).tooltip(`Resume this session as ${display(a)}`)
-      .on_click((_e, cx) => { if (this.remoteFocus()) { this.actionError = REMOTE; cx.notify(); return; } closeOverlay(props().overlay); this.continueAs(a.name, this.session); })
+      .hover((h) => h.bg(INK.selected)).tooltip(`Resume this session as ${display(a)}, then close this pane`)
+      .on_click((_e, cx) => {
+        if (this.remoteFocus()) { this.actionError = REMOTE; cx.notify(); return; }
+        if (this.moving) return;
+        this.moving = true;
+        this.actionError = null;
+        this.continueAs(a.name, this.session, cx, (why) => {
+          this.moving = false;
+          if (why) { this.actionError = why; cx.notify(); return; }
+          closeOverlay(props().overlay);
+        });
+      })
       .child(div().w(14).flex_none())
       .child(this.avatar(display(a), 20, 10))
       .child(div().flex_1().min_w(0).truncate().text_size(13).font_family(FONT).font_bold().text_color(INK.t2).child(display(a)))
