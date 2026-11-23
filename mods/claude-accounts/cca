@@ -11,6 +11,11 @@ STATE="$TOWER/usage"
 HERE=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || printf %s "$0")")" && pwd)
 CURRENT="$TOWER/current"
 CODEX_CURRENT="$TOWER/codex-current"
+# The command new and resumed Claude sessions start with, one for every layout.
+LAUNCH="$TOWER/launch"
+# Where each layout's accounts mod kept it before LAUNCH existed; the first one with a value is
+# read until a layout saves into LAUNCH.
+LAUNCH_LEGACY="cozy-launch chiikawa-launch night-city-launch arcade-launch inkpaw-launch"
 LABELS="$TOWER/labels"
 SHARED="projects history.jsonl file-history todos plans tasks teams paste-cache session-env sessions"
 
@@ -20,7 +25,7 @@ die() { printf 'cca: %s\n' "$*" >&2; exit 1; }
 die_as() { code=$1; shift; printf 'cca: %s\n' "$*" >&2; exit "$code"; }
 
 reserved_name() {
-  case "$1" in ls|add|share|use|current|shell-init|help|'-'*) return 0 ;; esac
+  case "$1" in ls|add|share|use|current|launch|shell-init|help|'-'*) return 0 ;; esac
   return 1
 }
 
@@ -356,21 +361,32 @@ plan_line() {
 }
 
 # The status line carries only the 5h and 7d windows, so the Fable weekly window comes from the
-# usage endpoint /usage reads, with the token Claude Code keeps in the keychain for that config dir.
+# usage endpoint /usage reads, with the token Claude Code keeps for that config dir: in the macOS
+# keychain, or where there is none (Linux), in the config dir's .credentials.json. The credentials go
+# straight to usage-api.mjs on stdin; cca neither prints nor stores them.
 # It is written to <name>.api.json, apart from the file usage-tap.sh rewrites.
 api_fetch() {
   name=$1 dir=$2
-  if [ "$name" = default ]; then svc="Claude Code-credentials"
-  else svc="Claude Code-credentials-$(printf '%s' "$dir" | shasum -a 256 | cut -c1-8)"; fi
-  creds=$(security find-generic-password -s "$svc" -w 2>/dev/null) || return 0
-  body=$(printf '%s' "$creds" | node "$HERE/usage-api.mjs" 2>/dev/null) || return 0
+  creds=
+  if command -v security >/dev/null 2>&1; then
+    if [ "$name" = default ]; then svc="Claude Code-credentials"
+    else svc="Claude Code-credentials-$(printf '%s' "$dir" | shasum -a 256 | cut -c1-8)"; fi
+    creds=$(security find-generic-password -s "$svc" -w 2>/dev/null) || creds=
+  fi
+  if [ -n "$creds" ]; then
+    body=$(printf '%s' "$creds" | node "$HERE/usage-api.mjs" 2>/dev/null) || return 0
+  elif [ -f "$dir/.credentials.json" ] && [ -r "$dir/.credentials.json" ]; then
+    body=$(node "$HERE/usage-api.mjs" < "$dir/.credentials.json" 2>/dev/null) || return 0
+  else
+    return 0
+  fi
   [ -n "$body" ] || return 0
   mkdir -p "$STATE" && printf '%s' "$body" > "$STATE/$name.api.json.tmp.$$" && mv "$STATE/$name.api.json.tmp.$$" "$STATE/$name.api.json"
 }
 
 # At most every 5 minutes, in the background so the porcelain read never waits on the network.
 api_refresh() {
-  command -v node >/dev/null 2>&1 && command -v security >/dev/null 2>&1 || return 0
+  command -v node >/dev/null 2>&1 || return 0
   mkdir -p "$STATE" 2>/dev/null || return 0
   stamp="$STATE/.api-fetch"
   [ -n "$(find "$stamp" -mmin -5 2>/dev/null)" ] && return 0
@@ -431,14 +447,25 @@ codex_lines() {
   done
 }
 
+# A process's environment, one VAR=value per line. Linux keeps it NUL-separated in
+# /proc/<pid>/environ (readable for one's own processes), where `ps -E` is not an option; BSD and
+# macOS ps print it after the command with -E. Tests point CCA_PS at a stub because the sandbox's
+# ps -E shows no environment, and CCA_PROC at a fake /proc.
+pane_env() {
+  if [ -z "${CCA_PS:-}" ] && [ -r "${CCA_PROC:-/proc}/$1/environ" ]; then
+    tr '\000' '\n' < "${CCA_PROC:-/proc}/$1/environ" 2>/dev/null
+    return 0
+  fi
+  ${CCA_PS:-ps} -E -ww -p "$1" -o command= 2>/dev/null | tr ' ' '\n'
+}
+
 cmd_porcelain() {
   pid=${1:-}
   case "$pid" in *[!0-9]*) pid= ;; esac
   cur=default
   envs=
   if [ -n "$pid" ]; then
-    # Tests point CCA_PS at a stub because the sandbox's ps -E shows no environment.
-    envs=$(${CCA_PS:-ps} -E -ww -p "$pid" -o command= 2>/dev/null | tr ' ' '\n')
+    envs=$(pane_env "$pid")
     d=$(printf '%s\n' "$envs" | grep '^CLAUDE_CONFIG_DIR=' | tail -n 1 | cut -d= -f2-)
     d=${d%/}
     cur=$(acct_name "${d:-$HOME/.claude}")
@@ -489,6 +516,20 @@ cmd_porcelain() {
   fi
 }
 
+# With CLAUDE_CONFIG_DIR set, Claude Code reads <dir>/.claude.json instead of ~/.claude.json, so the
+# user-scope MCP servers (its "mcpServers" key) would be missing from every other account. That file
+# also holds the account's login and per-account state, so it is never linked: only this one key is
+# copied from ~/.claude.json and the rest of the account's file is kept as it is. A key missing from
+# ~/.claude.json is removed from the account; a missing ~/.claude.json changes nothing. The file is
+# rewritten only when the key differs, through a temporary file beside it and a rename, keeping its
+# mode (0600 for a new file). A link to ~/.claude.json itself is left alone. Exit 1, with a reason on
+# stderr: no node, or a file that is not a JSON object; the account's file is then left untouched.
+sync_mcp() {
+  command -v node >/dev/null 2>&1 || return 1
+  node -e 'const fs=require("fs"),path=require("path");const [src,dst]=process.argv.slice(1);const fail=(m)=>{process.stderr.write("cca: mcpServers not synced: "+m+"\n");process.exit(1)};let from={};try{from=JSON.parse(fs.readFileSync(src,"utf8"))}catch(e){if(e.code==="ENOENT")process.exit(0);fail(src+" is not readable JSON")}if(!from||typeof from!=="object"||Array.isArray(from))fail(src+" is not a JSON object");let real=dst;try{real=fs.realpathSync(dst)}catch{}try{if(fs.realpathSync(src)===real)process.exit(0)}catch{}let to={},mode=0o600;try{to=JSON.parse(fs.readFileSync(real,"utf8"));mode=fs.statSync(real).mode&0o777}catch(e){if(e.code!=="ENOENT")fail(dst+" is not readable JSON")}if(!to||typeof to!=="object"||Array.isArray(to))fail(dst+" is not a JSON object");const want=from.mcpServers;if(JSON.stringify(to.mcpServers)===JSON.stringify(want))process.exit(0);if(want===undefined)delete to.mcpServers;else to.mcpServers=want;const tmp=path.join(path.dirname(real),"."+path.basename(real)+".cca."+process.pid);try{fs.writeFileSync(tmp,JSON.stringify(to,null,2),{mode,flag:"wx"});fs.chmodSync(tmp,mode);fs.renameSync(tmp,real)}catch{try{fs.unlinkSync(tmp)}catch{}fail("could not write "+dst)}' \
+    "$HOME/.claude.json" "$1/.claude.json"
+}
+
 # A new account is a config dir of its own: everything in ~/.claude is linked in except login and
 # per-session state. Session history is linked too, so every account sees the same transcripts.
 make_account() {
@@ -515,6 +556,8 @@ make_account() {
     esac
     ln -s "$src" "$dir/$x" || { rm -rf "$dir"; printf 'Could not link %s.\n' "$x" >&2; return 5; }
   done
+  # The account works without them, so a failed copy only warns.
+  sync_mcp "$dir" || :
   return 0
 }
 
@@ -662,6 +705,7 @@ cmd_run() {
     [ -d "$dir" ] || die "No account $name. Create it with: cca add $name"
     CLAUDE_CONFIG_DIR="$dir"
     export CLAUDE_CONFIG_DIR
+    sync_mcp "$dir" || :
   fi
   # An explicit choice wins over the shell hook's global default for the session this starts.
   CCA_ACCOUNT=$name
@@ -670,8 +714,92 @@ cmd_run() {
   exec claude "$@"
 }
 
+# How the app starts Claude Code in a pane: --porcelain-start <name> [<session id> <cwd>]. It sets the
+# account up as `cca <name>` does, changes into <cwd> to resume <session id> there, and starts
+# claude through the person's login shell as an interactive one, so the PATH and variables their
+# shell startup files set (node version managers, proxies) reach Claude Code and its MCP servers
+# just as in a terminal tab. Shells that take -l -i -c get them; any other $SHELL, or none, falls
+# back to sh -l. Exit 2: a bad name, session id or missing cwd; 3: no such account; 1: no such folder.
+cmd_porcelain_start() {
+  name=${1:-}
+  sid=${2-}
+  wd=${3-}
+  case "$name" in
+    default) ;;
+    *)
+      reserved_name "$name" && die_as 2 "$name is a cca command."
+      folder_reserved "$name" && die_as 2 "$name is a cca command."
+      valid_name "$name" || die_as 2 "Use letters, digits, - or _."
+      [ -d "$HOME/.claude-accounts/$name" ] || die_as 3 "No account $name."
+      ;;
+  esac
+  cmd="exec claude"
+  if [ -n "$sid" ]; then
+    printf '%s\n' "$sid" | grep -Eqx '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+      || die_as 2 "not a session id: $sid"
+    [ -n "$wd" ] || die_as 2 "a resumed session needs its folder"
+    cd "$wd" || die_as 1 "cannot change into $wd"
+    cmd="exec claude --resume $sid"
+  fi
+  if [ "$name" = default ]; then
+    unset CLAUDE_CONFIG_DIR
+  else
+    CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$name"
+    export CLAUDE_CONFIG_DIR
+    sync_mcp "$CLAUDE_CONFIG_DIR" || :
+  fi
+  CCA_ACCOUNT=$name
+  export CCA_ACCOUNT
+  # The command is plain words only, so every one of these shells reads it the same way.
+  login=${SHELL:-}
+  case "${login##*/}" in
+    sh|bash|zsh|ksh|mksh|dash|yash|fish)
+      [ -x "$login" ] && exec "$login" -l -i -c "$cmd" ;;
+  esac
+  exec /bin/sh -l -c "$cmd"
+}
+
 cmd_current() {
   current_default
+}
+
+# The first line of a file, trimmed; empty when the file is missing or blank.
+first_line() {
+  [ -r "$1" ] || return 0
+  sed -n '1{s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' "$1"
+}
+
+# `cca launch` prints the start command (nothing when none was ever saved; the caller falls back
+# to claude). `cca launch set <command>` saves it for every layout; an empty command clears it.
+# Exit 2: a command with a tab or line break.
+cmd_launch() {
+  case "${1:-}" in
+    '')
+      value=$(first_line "$LAUNCH")
+      if [ -z "$value" ] && [ ! -e "$LAUNCH" ]; then
+        for name in $LAUNCH_LEGACY; do
+          value=$(first_line "$TOWER/$name")
+          [ -n "$value" ] && break
+        done
+      fi
+      [ -n "$value" ] && printf '%s\n' "$value"
+      return 0
+      ;;
+    set)
+      value=${2-}
+      tab=$(printf '\t'); cr=$(printf '\r')
+      case "$value" in *"$tab"*|*"$cr"*) die_as 2 "a start command is one line" ;; esac
+      case "$value" in *'
+'*) die_as 2 "a start command is one line" ;; esac
+      value=$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      mkdir -p "$TOWER" || die "cannot create $TOWER"
+      tmp="$LAUNCH.tmp.$$"
+      if printf '%s\n' "$value" > "$tmp" && mv "$tmp" "$LAUNCH"; then :; else
+        rm -f "$tmp"; die "cannot write $LAUNCH"
+      fi
+      ;;
+    *) die_as 2 "usage: cca launch [set <command>]" ;;
+  esac
 }
 
 # Sets the account or model every new session starts under. Exit 2: unusable name, 3: no such
@@ -813,9 +941,13 @@ cca — Claude Code accounts
                        CLAUDE_CONFIG_DIR unset (cca work -c continues here)
   cca use <name>       make <name> the default for every new session
   cca current          print that default
+  cca launch           print the command new and resumed Claude sessions start
+                       with (nothing: claude); cca launch set <command> saves
+                       it for every layout
   cca shell-init       the claude() shell function that applies it; eval it
                        from ~/.zshrc to make a new shell start under it
-  cca add <name>       create ~/.claude-accounts/<name>, sharing config and history
+  cca add <name>       create ~/.claude-accounts/<name>, sharing config and history;
+                       it and every cca <name> copy mcpServers from ~/.claude.json
   cca share <name>     link the shared history into an account made before sharing
                        existed; --dry-run prints the plan first
   cca codex use <name> make ~/.codex-accounts/<name> the Codex login for new
@@ -828,6 +960,7 @@ Names: letters, digits, - and _.
 Usage files: ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tower/usage/
 Default for new sessions: ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tower/current
 Codex default for new sessions: ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tower/codex-current
+Start command: ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-tower/launch
 EOF
 }
 
@@ -840,12 +973,14 @@ case "${1:-}" in
   use) shift; cmd_use "${1:-}" ;;
   codex) shift; cmd_codex "$@" ;;
   current) cmd_current ;;
+  launch) shift; cmd_launch "$@" ;;
   shell-init) cmd_shell_init ;;
   --porcelain) shift; cmd_porcelain "${1:-}" ;;
   --porcelain-add) shift; cmd_porcelain_add "${1:-}" ;;
   --porcelain-add-codex) shift; cmd_porcelain_add_codex "${1:-}" ;;
   --porcelain-add-model) shift; cmd_porcelain_add_model "${1-}" "${2-}" ;;
   --porcelain-rename) shift; cmd_porcelain_rename "${1:-}" "${2-}" ;;
+  --porcelain-start) shift; cmd_porcelain_start "${1:-}" "${2-}" "${3-}" ;;
   --*) die "unknown option $1" ;;
   *) cmd_run "$@" ;;
 esac
